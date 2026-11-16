@@ -119,6 +119,88 @@ function splitModelId(modelId: string): { provider?: string; model: string } {
   }
 }
 
+/**
+ * Generates lookup variants for a model id segment so that provider-specific
+ * spellings still find the canonical models.dev entry, for example:
+ *
+ * - `deepseek-v4-1-flash-261017` -> `deepseek-v4.1-flash-1017`
+ * - `claude-opus-4-5` -> `claude-opus-4.5`
+ * - `grok-build-latest` -> `grok-build`
+ *
+ * Variants are ordered from least to most transformed, and the original id is
+ * always tried first, so normalization can only add matches that the raw id
+ * would otherwise miss.
+ */
+function generateModelIdVariants(modelId: string): string[] {
+  const variants: string[] = []
+  const add = (value: string): void => {
+    if (value.length > 0 && !variants.includes(value)) {
+      variants.push(value)
+    }
+  }
+
+  const transforms: Array<(value: string) => string> = [
+    // Version separators: `v4-1` -> `v4.1`, `opus-4-5` -> `opus-4.5`.
+    // Lookarounds keep date suffixes such as `glm-4-7-251222` intact.
+    (value) => value.replace(/(?<![\d.])(\d{1,2})-(\d{1,2})(?![\d.])/g, '$1.$2'),
+    (value) => value.replace(/(?<![\d.])(\d{1,2})\.(\d{1,2})(?![\d.])/g, '$1-$2'),
+    // BytePlus-style compact dates: `-261017` -> `-1017`.
+    (value) => value.replace(/-(26)(\d{4})(?!\d)/g, '-$2'),
+    (value) => value.replace(/-latest$/i, ''),
+  ]
+
+  add(modelId)
+  for (const transform of transforms) {
+    add(transform(modelId))
+  }
+
+  const firstLevel = variants.slice(1)
+  for (const variant of firstLevel) {
+    for (const transform of transforms) {
+      add(transform(variant))
+    }
+  }
+
+  return variants
+}
+
+function findExactModelMatch(
+  modelId: string,
+  allCandidates: ReadonlyArray<[string, ModelsDevModel]>
+): ModelsDevModel | undefined {
+  const requestedModelLower = modelId.toLowerCase()
+  const exactModelMatches = allCandidates.filter(([candidateModel]) => candidateModel === requestedModelLower)
+  return exactModelMatches.length === 1 ? exactModelMatches[0]?.[1] : undefined
+}
+
+function findBestPrefixMatch(
+  modelIds: readonly string[],
+  allCandidates: ReadonlyArray<[string, ModelsDevModel]>
+): ModelsDevModel | undefined {
+  let bestMatch: ModelsDevModel | undefined
+  let bestScore = 0
+  let bestScoreMatches = 0
+
+  for (const modelId of modelIds) {
+    const requestedModelLower = modelId.toLowerCase()
+    for (const [candidateModel, value] of allCandidates) {
+      const score = calculatePrefixScore(requestedModelLower, candidateModel)
+      if (score < PREFIX_MATCH_MIN_SCORE) {
+        continue
+      }
+      if (score > bestScore) {
+        bestScore = score
+        bestMatch = value
+        bestScoreMatches = 1
+      } else if (score === bestScore && value !== bestMatch) {
+        bestScoreMatches++
+      }
+    }
+  }
+
+  return bestScoreMatches === 1 ? bestMatch : undefined
+}
+
 function calculatePrefixScore(modelA: string, modelB: string): number {
   const partsA = modelA.split('-')
   const partsB = modelB.split('-')
@@ -148,10 +230,7 @@ export function lookupModelsDevData(
     cleanId = parts.slice(-2).join('/')
   }
 
-  const exactMatch = cache.get(cleanId) ?? cache.get(cleanId.toLowerCase())
-  if (exactMatch) return exactMatch
-
-  const requestedModelLower = splitModelId(cleanId).model.toLowerCase()
+  const { provider, model } = splitModelId(cleanId)
   const allCandidates: Array<[string, ModelsDevModel]> = []
 
   for (const [key, value] of cache.entries()) {
@@ -160,26 +239,20 @@ export function lookupModelsDevData(
     allCandidates.push([candidateModelLower, value])
   }
 
-  const exactModelMatches = allCandidates.filter(([candidateModel]) => candidateModel === requestedModelLower)
-  if (exactModelMatches.length === 1) return exactModelMatches[0]?.[1]
-  if (exactModelMatches.length > 1) return undefined
+  const variants = generateModelIdVariants(model)
 
-  let bestMatch: ModelsDevModel | undefined
-  let bestScore = 0
-  let bestScoreMatches = 0
-
-  for (const [candidateModel, value] of allCandidates) {
-    const score = calculatePrefixScore(requestedModelLower, candidateModel)
-    if (score >= PREFIX_MATCH_MIN_SCORE && score > bestScore) {
-      bestScore = score
-      bestMatch = value
-      bestScoreMatches = 1
-    } else if (score >= PREFIX_MATCH_MIN_SCORE && score === bestScore) {
-      bestScoreMatches++
-    }
+  for (const variant of variants) {
+    const fullVariant = provider ? `${provider}/${variant}` : variant
+    const exactMatch = cache.get(fullVariant) ?? cache.get(fullVariant.toLowerCase())
+    if (exactMatch) return exactMatch
   }
 
-  return bestScoreMatches === 1 ? bestMatch : undefined
+  for (const variant of variants) {
+    const exactModelMatch = findExactModelMatch(variant, allCandidates)
+    if (exactModelMatch) return exactModelMatch
+  }
+
+  return findBestPrefixMatch(variants, allCandidates)
 }
 
 export const modelsDevTestUtils = {

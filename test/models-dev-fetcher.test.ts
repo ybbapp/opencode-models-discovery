@@ -146,6 +146,87 @@ describe('models.dev fetcher', () => {
     expect(lookupModelsDevData('custom/shared-model', cache)).toBeUndefined()
   })
 
+  it('should resolve provider-specific ids against dotted canonical ids', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'deepseek/deepseek-v4.1-flash-1017': {
+        name: 'DeepSeek V4.1 Flash 1017',
+        attachment: true,
+        reasoning: true,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        limit: { context: 1000000, output: 384000 }
+      }
+    })
+
+    expect(lookupModelsDevData('deepseek-v4-1-flash-261017', cache)).toEqual(expect.objectContaining({
+      id: 'deepseek/deepseek-v4.1-flash-1017',
+      attachment: true,
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      limit: { context: 1000000, input: undefined, output: 384000 }
+    }))
+  })
+
+  it('should prefer an exact normalized variant over a weaker family prefix match', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'deepseek/deepseek-v4.1-flash': {
+        name: 'DeepSeek V4.1 Flash',
+        limit: { context: 1000000, output: 384000 }
+      },
+      'deepseek/deepseek-v4.1-flash-1017': {
+        name: 'DeepSeek V4.1 Flash 1017',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        limit: { context: 1000000, output: 384000 }
+      }
+    })
+
+    expect(lookupModelsDevData('deepseek-v4-1-flash-261017', cache)?.id).toBe('deepseek/deepseek-v4.1-flash-1017')
+  })
+
+  it('should resolve dashed versions of dotted canonical ids', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      anthropic: {
+        models: {
+          'claude-opus-4.5': { id: 'claude-opus-4.5', attachment: true }
+        }
+      }
+    })
+
+    expect(lookupModelsDevData('claude-opus-4-5', cache)?.id).toBe('anthropic/claude-opus-4.5')
+  })
+
+  it('should keep the exact id ahead of normalized variants', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      providerA: {
+        models: {
+          'shared-model-1-2': { id: 'shared-model-1-2', tool_call: true }
+        }
+      },
+      providerB: {
+        models: {
+          'shared-model-1.2': { id: 'shared-model-1.2', tool_call: false }
+        }
+      }
+    })
+
+    expect(lookupModelsDevData('custom/shared-model-1-2', cache)?.id).toBe('providerA/shared-model-1-2')
+  })
+
+  it('should still reject ambiguous ids after normalization', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      providerA: {
+        models: {
+          'shared-model-1.2': { id: 'shared-model-1.2', tool_call: true }
+        }
+      },
+      providerB: {
+        models: {
+          'shared-model-1.2': { id: 'shared-model-1.2', tool_call: false }
+        }
+      }
+    })
+
+    expect(lookupModelsDevData('custom/shared-model-1-2', cache)).toBeUndefined()
+  })
+
   it('should cache models.dev data separately for each URL', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
       const id = String(url).includes('mirror.example') ? 'mirror-model' : 'default-model'
