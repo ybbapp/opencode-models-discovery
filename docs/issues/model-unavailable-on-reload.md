@@ -85,3 +85,11 @@ The latest real-host result still shows:
 This is distinct from a failed network refresh of a known provider, which the snapshot tests cover. The plugin now preserves/restores last-success state for a known matching identity, but that does not establish host readiness before plugin/provider initialization. The original session-runner incident remains unresolved at that boundary. Do not report the successful unit suite as proof that all `ModelUnavailableError` failures are fixed.
 
 Keep the PR in draft. The remaining investigation is the host's provider readiness and plugin replacement contract; no request delay or session hook gate is introduced in this implementation.
+
+## Experiment: persist model definitions in OpenCode configuration
+
+`node scripts/verify-v2-config-models.mjs` tests a possible alternative without touching the user's configuration. It creates a temporary `opencode.jsonc`, starts an isolated host and mock provider, waits for successful discovery, and writes the discovered model's ID/name/limits/capabilities to `providers.local.models`. It then makes the discovery endpoint return HTTP 503 and reloads the project location three times.
+
+Observed results: all 24 concurrent directory reads after reload retained the model, and all three real host generation requests reached the mock inference endpoint and returned HTTP 200 with `OK`. Before persistence, the initial catalog did not contain the model. These generation probes exercise actual host model resolution and streamed inference, but not the original session-runner restoration path.
+
+This supports configuration persistence as a workaround for this reproduction. The test performs one explicit write of the successful model definition; automatic plugin-to-config synchronization is **not implemented**. Before implementing it, define ownership of generated entries, preserve user overrides/comments, use atomic writes, avoid writes for unchanged inventory, prevent configuration-write/refresh loops, and handle account changes and intentional removals. The experiment does not prove those synchronization behaviors or every cold-start/session path.
