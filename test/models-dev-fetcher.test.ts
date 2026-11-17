@@ -146,6 +146,25 @@ describe('models.dev fetcher', () => {
     expect(lookupModelsDevData('custom/shared-model', cache)).toBeUndefined()
   })
 
+  it('should preserve exact matches with mixed-case provider keys', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'providerA/shared-model': { tool_call: true },
+      'providerB/shared-model': { tool_call: false }
+    })
+
+    expect(lookupModelsDevData('providerA/shared-model', cache)?.id).toBe('providerA/shared-model')
+  })
+
+  it('should stop when the original segment is ambiguous', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'a/shared-model-1-2': { tool_call: true },
+      'b/shared-model-1-2': { tool_call: false },
+      'c/shared-model-1.2': { tool_call: true }
+    })
+
+    expect(lookupModelsDevData('custom/shared-model-1-2', cache)).toBeUndefined()
+  })
+
   it('should resolve provider-specific ids against dotted canonical ids', () => {
     const cache = modelsDevTestUtils.parseModelsDevData({
       'deepseek/deepseek-v4.1-flash-1017': {

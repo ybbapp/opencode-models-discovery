@@ -167,9 +167,10 @@ function generateModelIdVariants(modelId: string): string[] {
 function findExactModelMatch(
   modelId: string,
   allCandidates: ReadonlyArray<[string, ModelsDevModel]>
-): ModelsDevModel | undefined {
+): ModelsDevModel | null | undefined {
   const requestedModelLower = modelId.toLowerCase()
   const exactModelMatches = allCandidates.filter(([candidateModel]) => candidateModel === requestedModelLower)
+  if (exactModelMatches.length > 1) return null
   return exactModelMatches.length === 1 ? exactModelMatches[0]?.[1] : undefined
 }
 
@@ -230,6 +231,9 @@ export function lookupModelsDevData(
     cleanId = parts.slice(-2).join('/')
   }
 
+  const originalExactMatch = cache.get(cleanId) ?? cache.get(cleanId.toLowerCase())
+  if (originalExactMatch) return originalExactMatch
+
   const { provider, model } = splitModelId(cleanId)
   const allCandidates: Array<[string, ModelsDevModel]> = []
 
@@ -249,7 +253,7 @@ export function lookupModelsDevData(
 
   for (const variant of variants) {
     const exactModelMatch = findExactModelMatch(variant, allCandidates)
-    if (exactModelMatch) return exactModelMatch
+    if (exactModelMatch !== undefined) return exactModelMatch ?? undefined
   }
 
   return findBestPrefixMatch(variants, allCandidates)
