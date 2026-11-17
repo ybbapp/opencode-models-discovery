@@ -1,6 +1,6 @@
 # Model unavailable during plugin loading: investigation
 
-Status: reproduced with `@ybbapp/opencode-models-discovery@2.1.3`; root cause and fix are not yet verified.
+Status: reproduced with `@ybbapp/opencode-models-discovery@2.1.3`. An initial-publication mitigation is implemented on this PR branch, but an isolated real-host test still reproduces a model-resolution failure before plugin setup settles. This is not a complete fix.
 
 ## Observed failure
 
@@ -50,4 +50,30 @@ The leading hypothesis is a lifecycle readiness race: session selection can obse
 - Verify the host's contract for awaiting plugin setup before selecting a session model. A unit mock where `provider.reload` is a no-op cannot verify that contract.
 - A fix must ensure either a valid previous snapshot remains usable or session resolution waits for the relevant initial catalog. Avoid retaining models across unrelated provider credentials or locations, and preserve intentional removal/filter semantics.
 
-No runtime fix is included in this investigation. A passing initialized-instance refresh test must not be reported as proof that this lifecycle issue is resolved.
+## Implementation and test results
+
+The initial-publication change removes eager transform registration from setup and provider synchronization. `replaceInventory` installs the discovered, overridden snapshot before registering transforms and performing the provider reload. This prevents registration from publishing this controller's empty initial inventory while its first discovery request is pending. Subsequent refreshes continue to use the existing registered transforms and previous inventory.
+
+A delayed-response unit regression failed against the previous code because provider transforms were registered before the discovery response arrived. With the change, no provider/integration transform or integration reload is issued by this setup while the response is pending; the first provider transform sees `stable-model`. The full build passes 355 tests across 43 test files, type checking, and compilation, with the existing 20 lint warnings.
+
+### Remaining host readiness gap
+
+An independent OpenCode service was launched with temporary XDG/config paths, this branch's compiled local plugin, a loopback mock provider, and discovery caching disabled. The mock `/v1/models` response was delayed by 1.5 seconds. No user provider credentials or production inference endpoint was used.
+
+With the initial-publication change applied:
+
+1. During the pending discovery response, the host's model-list API returned HTTP 200 with 13 built-in models, without `local/stable-model`.
+2. The plugin's status RPC was already callable and reported zero discovered models.
+3. A valid `POST /api/experimental/generate/text` specifying `{ "providerID": "local", "id": "stable-model" }` returned HTTP 404 with `ModelNotFoundError: Model not found: local/stable-model`.
+4. After discovery completed, the catalog contained 14 models, including `stable-model`.
+
+The standalone generation endpoint is a real host model-resolution probe, not the original session-runner path. It demonstrates that the host serves model-resolution requests before plugin setup finishes; it does not by itself prove the same readiness contract applies to every session hook. Deferring transform registration is insufficient to eliminate this window.
+
+### Next fix steps
+
+- Verify whether the session `prompt` hook executes before model selection, including restored inbox turns. If it does, assess a setup-readiness gate scoped to this plugin context; a hook registered after the host has already dispatched the turn cannot protect it.
+- Inspect the host's session/model readiness contract and determine whether model resolution must await relevant plugin setup. An async provider transform is not supported by the current plugin SDK.
+- Keep the first-publication regression, then add a host-level regression asserting a session request waits rather than fails while initial discovery is delayed. Include plugin reinitialization and restored sessions, not just standalone generation.
+- Validate any readiness gate against initialization failure, disposal, credential changes, and discovery timeouts so requests cannot wait indefinitely or receive another account's inventory.
+
+A passing initialized-instance refresh test, the new unit regression, or the initial-publication mitigation must not be reported as proof that the lifecycle issue is resolved. Keep this PR in draft until the remaining readiness gap has an accepted resolution.

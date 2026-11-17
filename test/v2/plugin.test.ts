@@ -18,7 +18,7 @@ function context(overrides: Record<string, unknown> = {}) {
   })
   const providerReload = vi.fn().mockResolvedValue(undefined)
   const integrationTransform = vi.fn().mockImplementation(async (callback) => {
-    callback({ update: vi.fn(), method: { update: vi.fn() } })
+    callback({ get: vi.fn(), update: vi.fn(), method: { update: vi.fn() } })
   })
   const integrationReload = vi.fn().mockResolvedValue(undefined)
   const toolTransform = vi.fn().mockImplementation(async (callback) => callback({ add: vi.fn() }))
@@ -59,6 +59,40 @@ function context(overrides: Record<string, unknown> = {}) {
 }
 
 describe("V2 plugin entrypoint", () => {
+  it("publishes the initial inventory before registering catalog transforms", async () => {
+    let release!: (response: Response) => void
+    const response = new Promise<Response>((resolve) => { release = resolve })
+    const fetcher = vi.spyOn(globalThis, "fetch").mockReturnValue(response)
+    const published: string[][] = []
+    const ctx = context()
+    ctx.provider.transform.mockImplementation(async (callback) => {
+      callback({
+        get: vi.fn().mockReturnValue(undefined),
+        add: vi.fn(),
+        update: vi.fn(),
+        models: { set: vi.fn((_providerID, models) => published.push(models.map((model: { id: string }) => model.id))) },
+      })
+    })
+
+    try {
+      const setup = plugin.setup(ctx as never)
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
+      // Simulate session/catalog observation while discovery is still pending.
+      expect(ctx.provider.transform).not.toHaveBeenCalled()
+      expect(ctx.integration.transform).not.toHaveBeenCalled()
+      expect(ctx.integration.reload).not.toHaveBeenCalled()
+      expect(ctx.provider.reload).not.toHaveBeenCalled()
+
+      release({ ok: true, json: async () => ({ data: [{ id: "stable-model" }] }) } as Response)
+      await setup
+      expect(published).toEqual([["stable-model"]])
+      expect(ctx.provider.reload).toHaveBeenCalledTimes(1)
+    } finally {
+      release({ ok: false } as Response)
+      fetcher.mockRestore()
+    }
+  })
+
   it("registers provider and integration transforms, then reloads after discovery", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
@@ -265,7 +299,7 @@ describe("V2 plugin entrypoint", () => {
     const ctx = context({
       event: events,
       integration: {
-        transform: vi.fn().mockImplementation(async (callback) => callback({ update: vi.fn(), method: { update: vi.fn() } })),
+        transform: vi.fn().mockImplementation(async (callback) => callback({ get: vi.fn(), update: vi.fn(), method: { update: vi.fn() } })),
         reload: vi.fn().mockResolvedValue(undefined),
         connection: {
           active: vi.fn().mockResolvedValue({ type: "credential", id: "active-credential" }),

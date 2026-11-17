@@ -41,7 +41,8 @@ type ProviderContext = Pick<Plugin.Context, "provider">
 
 export interface ProviderController {
   readonly transform: (editor: Parameters<Plugin.Context["provider"]["transform"]>[0] extends (editor: infer Draft) => void ? Draft : never) => void
-  readonly replaceInventory: (next: Inventory) => Promise<void>
+  /** Install the snapshot before initial transform registration can publish it. */
+  readonly replaceInventory: (next: Inventory, beforeReload?: () => Promise<void>) => Promise<void>
   readonly status: () => { providers: number; models: number }
   readonly getInventory: () => Inventory
 }
@@ -122,8 +123,9 @@ export function createProviderController(
 
   return {
     transform,
-    async replaceInventory(next) {
+    async replaceInventory(next, beforeReload) {
       inventory = copyInventory(next)
+      await beforeReload?.()
       await ctx.provider.reload()
     },
     status() {

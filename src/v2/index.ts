@@ -125,7 +125,6 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
     discovery.clear()
     for (const [id, options] of configured.discovery) discovery.set(id, options)
 
-    await ensureTransformsRegistered()
     return configured.providers.length > 0
   }
 
@@ -163,7 +162,9 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
         if (override) models.set(modelID, applyModelOverride(model as unknown as Record<string, unknown>, override) as unknown as typeof model)
       }
     }
-    await controller.replaceInventory(inventory)
+    // Registration can rebuild the host catalog immediately. Seed the controller
+    // first, so its first transform already exposes the discovered models.
+    await controller.replaceInventory(inventory, ensureTransformsRegistered)
     return controller.status()
   }
 
@@ -249,7 +250,6 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
   const inspectStatus = async (options?: DiscoveryStatusInput): Promise<string> =>
     formatStatusReport(await collectStatus(options), options)
 
-  await ensureTransformsRegistered()
   await registerDiscoveryTools(ctx, refreshFromCurrentConfig, inspectStatus)
 
   if (ctx.rpc && typeof ctx.rpc.register === "function") {
