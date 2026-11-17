@@ -10,6 +10,7 @@ import { resolveProviderCredential } from "./credential-resolver.js"
 import { DiscoveryRpcDefinition, type RpcCacheEntry } from "./rpc.js"
 import { applyModelOverride, deleteModelOverride, listModelOverrides, setModelOverride } from "./overrides.js"
 import { inventorySnapshotKey, readInventorySnapshot, writeInventorySnapshot } from "./inventory-snapshot.js"
+import { persistedConfigPath, persistConfigModels } from "./config-models.js"
 
 export function integrationID(providerID: string): string {
   return providerID
@@ -190,6 +191,18 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
       if (!resolved.some((provider) => provider.id === providerID)) baselineInventory.delete(providerID)
     }
     await applyOverrides(inventory)
+    for (const provider of resolved) {
+      const options = discovery.get(provider.id)?.persistModels
+      if (!options || !discoveredInventory.has(provider.id)) continue
+      try {
+        await persistConfigModels(persistedConfigPath(options, ctx.location?.directory), provider, inventory.get(provider.id)!)
+      } catch {
+        // A failed/contended config write must not erase the old file or inventory.
+        // Report the provider only; filesystem errors can contain sensitive paths.
+        // eslint-disable-next-line no-console
+        console.warn(`[opencode-models-discovery] Could not persist models for provider "${provider.id}"; keeping the existing configuration`)
+      }
+    }
     // Failed requests leave the published inventory untouched. Successful empty
     // responses are valid replacements, unlike failed/malformed responses.
     if (discoveredInventory.size > 0 || identityChanged || previousProviderIDs.some((id) => !resolved.some((provider) => provider.id === id))) {

@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { parse } from 'jsonc-parser';
 import { spawn } from 'node:child_process';
 const pluginDirectory = new URL('../dist', import.meta.url).pathname;
 const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'opencode-config-model-test-'));
@@ -31,6 +32,8 @@ const mock=http.createServer(async(req,res)=>{
 });
 await new Promise(r=>mock.listen(0,'127.0.0.1',r));
 const config={plugins:['file://' + pluginDirectory],providers:{local:{package:'@opencode/ai/providers/openai-compatible',settings:{baseURL:`http://127.0.0.1:${mock.address().port}/v1`,apiKey:'mock-test-only',modelsDiscovery:{enabled:true,cache:{enabled:false}}}}}};
+const automatic = process.env.AUTO_PERSIST === '1';
+if (automatic) config.providers.local.settings.modelsDiscovery.persistModels = { enabled: true, path: file };
 fs.writeFileSync(file,'// Isolated test configuration\n'+JSON.stringify(config,null,2));
 const env={...process.env,OPENCODE_CONFIG:file,OPENCODE_CONFIG_DIR:path.join(scratch,'config'),OPENCODE_CONFIG_PROJECT_DISABLE:'true',OPENCODE_DISABLE_PROJECT_CONFIG:'true',OPENCODE_DISABLE_MODELS_FETCH:'true',OPENCODE_SERVER_PASSWORD:'config-test-only',OPENCODE_PASSWORD:'config-test-only',XDG_CONFIG_HOME:path.join(scratch,'config'),XDG_DATA_HOME:path.join(scratch,'data'),XDG_STATE_HOME:path.join(scratch,'state'),XDG_CACHE_HOME:path.join(scratch,'cache')};
 delete env.OPENCODE_CONFIG_CONTENT;delete env.OPENCODE_CLI_CONFIG_CONTENT;
@@ -54,8 +57,15 @@ try{
  const m=successful.data.data.find(m=>m.providerID==='local'&&m.id==='stable-model');
  config.providers.local.models={'stable-model':{modelID:m.modelID,name:m.name,limit:m.limit,capabilities:{tools:m.capabilities.tools,input:m.capabilities.input,output:m.capabilities.output}}};
  fail=true;
- fs.writeFileSync(file+'.tmp','// Isolated test: persisted successful inventory\n'+JSON.stringify(config,null,2));fs.renameSync(file+'.tmp',file);
+ if (!automatic) {
+  fs.writeFileSync(file+'.tmp','// Isolated test: persisted successful inventory\n'+JSON.stringify(config,null,2));fs.renameSync(file+'.tmp',file);
+ } else {
+  const saved=parse(fs.readFileSync(file,'utf8'));
+  if (!saved.providers.local.models?.['stable-model'] || !saved.providers.local.settings.modelsDiscovery.persistModels.managedModels?.['stable-model']) throw Error('Plugin did not automatically persist the model');
+  console.log('AUTOMATIC_WRITE_CONFIRMED');
+ }
  console.log('PERSISTED_SUCCESSFUL_MODEL',JSON.stringify(config.providers.local.models));
+ const persistedText=fs.readFileSync(file,'utf8');
  const results=[];
  for(let round=1;round<=3;round++){
   const reload=await api('POST','/api/location/reload');
@@ -63,11 +73,11 @@ try{
   const generated=await api('POST','/api/experimental/generate/text',{model:{providerID:'local',id:'stable-model'},prompt:'Reply OK only.'});
   const refresh=await api('POST','/api/rpc/opencode.models-discovery/refresh',{input:{force:true}});
   const after=await api('GET','/api/model');
-  const result={round,reload:reload.status,reads:reads.length,missing:reads.filter(x=>!has(x)).length,generation:generated.status,generationBody:generated.data,refresh:refresh.status,after:has(after)};
+  const result={round,reload:reload.status,reads:reads.length,missing:reads.filter(x=>!has(x)).length,generation:generated.status,generationBody:generated.data,refresh:refresh.status,after:has(after),configUnchanged:fs.readFileSync(file,'utf8')===persistedText};
   results.push(result);console.log('ROUND',JSON.stringify(result));
  }
  const report={scratch,baseline:{status:baseline.status,target:has(baseline),generation:cold.status},results,discoveries,inferences};
  fs.writeFileSync(path.join(scratch,'result.json'),JSON.stringify(report,null,2));
  console.log('RESULT',JSON.stringify(report));
- if(results.some(x=>x.missing||!x.after||x.generation!==200||x.generationBody?.data?.text!=='OK'))process.exitCode=1;
+ if(results.some(x=>x.missing||!x.after||!x.configUnchanged||x.generation!==200||x.generationBody?.data?.text!=='OK'))process.exitCode=1;
 }catch(e){console.log('ERROR',e.stack,'ARTIFACTS',scratch);process.exitCode=1;}finally{clearTimeout(timeout);host.kill();mock.close();log.end();}

@@ -102,9 +102,11 @@ describe('Node host compatibility (OpenCode Desktop)', () => {
     renameSync(path.join(stagedRoot, 'package'), stagedPkgDir)
 
     // Provide the runtime dependency the host would install alongside the plugin.
-    const depSource = path.join(repoRoot, 'node_modules', 'xdg-basedir')
-    if (existsSync(depSource)) {
-      cpSync(depSource, path.join(stagedRoot, 'node_modules', 'xdg-basedir'), { recursive: true })
+    for (const dependency of ['xdg-basedir', 'jsonc-parser']) {
+      const depSource = path.join(repoRoot, 'node_modules', dependency)
+      if (existsSync(depSource)) {
+        cpSync(depSource, path.join(stagedRoot, 'node_modules', dependency), { recursive: true })
+      }
     }
 
     // The combined V1/V2 entrypoint has an external V2 SDK dependency. Install

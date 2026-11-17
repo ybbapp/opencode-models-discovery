@@ -1,6 +1,6 @@
 # Model unavailable during plugin loading: investigation
 
-Status: reproduced with `@ybbapp/opencode-models-discovery@2.1.3`. A last-successful-inventory snapshot is implemented on this PR branch, but an isolated real-host test still reproduces a model-resolution failure before provider configuration and plugin setup settle. This is not a complete fix.
+Status: reproduced with npm `@ybbapp/opencode-models-discovery@2.1.3`. This PR now includes opt-in configuration persistence. Its automatic host reload/inference test passes after one successful discovery; snapshot-only mode still has a host initialization gap. The original restored-session path remains unverified.
 
 ## Observed failure
 
@@ -92,4 +92,24 @@ Keep the PR in draft. The remaining investigation is the host's provider readine
 
 Observed results: all 24 concurrent directory reads after reload retained the model, and all three real host generation requests reached the mock inference endpoint and returned HTTP 200 with `OK`. Before persistence, the initial catalog did not contain the model. These generation probes exercise actual host model resolution and streamed inference, but not the original session-runner restoration path.
 
-This supports configuration persistence as a workaround for this reproduction. The test performs one explicit write of the successful model definition; automatic plugin-to-config synchronization is **not implemented**. Before implementing it, define ownership of generated entries, preserve user overrides/comments, use atomic writes, avoid writes for unchanged inventory, prevent configuration-write/refresh loops, and handle account changes and intentional removals. The experiment does not prove those synchronization behaviors or every cold-start/session path.
+This supports configuration persistence as a workaround for this reproduction. The test performs one explicit write of the successful model definition; automatic synchronization was subsequently implemented as the opt-in `persistModels` feature described below. The original manual experiment does not prove every cold-start/session path.
+
+
+## Implemented opt-in configuration synchronization
+
+Enable `providers.<id>.settings.modelsDiscovery.persistModels.enabled` in the target file, optionally specifying `persistModels.path`. After a successful valid discovery and override application, the plugin synchronizes generated metadata into `providers.<id>.models`. Failed discovery never invokes the writer. Default behavior remains unchanged until explicitly enabled.
+
+Ownership is recorded as content hashes in `persistModels.managedModels`. Manual entries are never adopted, and user-edited generated entries are released from management. Valid empty responses remove only unedited generated entries. Updates preserve JSONC comments outside edited values, reject malformed or stale provider/settings configurations, serialize per-file operations, use an exclusive lock for cooperating writers, preserve permissions, and atomically replace the file. A no-op creates no lock/temp files and does not alter the file timestamp. A detected concurrent external edit or write failure keeps the existing file; failed persistence is logged without blocking model availability.
+
+Persisted definitions deliberately contain only model ID/name, limits, tools, input/output modalities and reasoning support. Secrets, arbitrary request bodies/headers and variants are excluded. Account/endpoint changes require review/removal of definitions from the old identity: static config models are host inputs before this plugin can check resolved credentials. Cross-process writers fail safely on lock contention; abrupt termination can leave a lock requiring manual cleanup.
+
+Run the automatic integration check with:
+
+```sh
+npm run compile
+AUTO_PERSIST=1 node scripts/verify-v2-config-models.mjs
+```
+
+This run confirms the plugin itself writes the model definition and ownership metadata. With discovery subsequently returning 503, three reloads retain the model across all 24 concurrent directory reads; all three actual host generation probes return 200 and `OK`. This is the real host generation path, not an original restored-session test. A genuinely first-ever startup still has no persisted definition until its first successful discovery.
+
+Validation: all 369 tests in 45 files pass, along with lint (20 existing warnings), type checking, compilation, and the automatic host integration check. No npm release or modification to the user's actual OpenCode configuration is included.
