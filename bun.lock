@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "opencode-model-discovery",
+      "name": "@ybbapp/opencode-models-discovery",
       "dependencies": {
         "@opencode/plugin": "2.2.6",
         "xdg-basedir": "^5.1.0",
