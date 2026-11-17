@@ -31,7 +31,7 @@ OpenCode v2 uses `plugins` and `providers`. Discovery settings belong under `pro
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    "@ybbapp/opencode-models-discovery@2.1.3"
+    "@ybbapp/opencode-models-discovery@2.2.0"
   ],
   "providers": {
     "gateway": {
@@ -75,7 +75,7 @@ For OpenCode v1 (`1.18.29+`), use `plugin`, `provider`, and `options`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@ybbapp/opencode-models-discovery@2.1.3"],
+  "plugin": ["@ybbapp/opencode-models-discovery@2.2.0"],
   "provider": {
     "lmstudio": {
       "npm": "@ai-sdk/openai-compatible",
@@ -176,7 +176,7 @@ Each terminal also ran two concurrent model-directory readers. Across 246 reads,
 
 ## npm release
 
-The public package is `@ybbapp/opencode-models-discovery`. Version `2.1.3` was published with the npm dist-tag `latest`. Use `@ybbapp/opencode-models-discovery@2.1.3` to pin that release, or `@ybbapp/opencode-models-discovery@latest` to follow the stable dist-tag. npm dist-tags are separate from Git tags; this local publication did not create a Git tag.
+The public package is `@ybbapp/opencode-models-discovery`. Version `2.2.0` uses the npm dist-tag `latest`. Use `@ybbapp/opencode-models-discovery@2.2.0` to pin that release, or `@ybbapp/opencode-models-discovery@latest` to follow the stable dist-tag. npm dist-tags are separate from Git tags; this local publication did not create a Git tag.
 
 ## Documentation
 
