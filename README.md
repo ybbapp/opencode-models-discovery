@@ -147,7 +147,7 @@ See the [full configuration reference](docs/configuration.md) for defaults, filt
 
 ## Refresh behavior and verification
 
-**Known issue:** `2.1.3` still reproduced `ModelUnavailableError` in a real session during a plugin-loading window after the checks below. These checks cover refreshes of initialized plugin instances, not readiness during plugin initialization or reload. See [the investigation and regression plan](docs/issues/model-unavailable-on-reload.md). The issue is not confirmed fixed.
+**Known issue:** `2.1.3` still reproduced `ModelUnavailableError` in a real session during a plugin-loading window after the checks below. These checks cover refreshes of initialized plugin instances, not readiness during plugin initialization or reload. See [the investigation and regression plan](docs/issues/model-unavailable-on-reload.md). The issue is not confirmed fixed. The PR branch now restores a last-successful inventory without waiting for discovery; host-level initialization gaps remain under investigation.
 
 On OpenCode v2, discovery refresh keeps the current model inventory available until the new inventory is ready. If a provider request fails, the plugin retains that provider's last known inventory. These protections predate this fork's `2.1.3` release: failure retention was added in `4fcb883` on October 13, 2026, and deferred catalog reload in `7fbc9af` on October 18, 2026; both are included in upstream `v2.0.0`.
 

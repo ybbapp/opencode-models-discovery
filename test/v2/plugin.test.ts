@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import plugin from "../../src/v2/index.js"
+import { inventorySnapshotTestUtils } from "../../src/v2/inventory-snapshot.js"
 
 function closedEvents() {
   return { subscribe: vi.fn().mockReturnValue({
@@ -59,36 +60,61 @@ function context(overrides: Record<string, unknown> = {}) {
 }
 
 describe("V2 plugin entrypoint", () => {
-  it("publishes the initial inventory before registering catalog transforms", async () => {
-    let release!: (response: Response) => void
-    const response = new Promise<Response>((resolve) => { release = resolve })
-    const fetcher = vi.spyOn(globalThis, "fetch").mockReturnValue(response)
-    const published: string[][] = []
-    const ctx = context()
-    ctx.provider.transform.mockImplementation(async (callback) => {
-      callback({
-        get: vi.fn().mockReturnValue(undefined),
-        add: vi.fn(),
-        update: vi.fn(),
-        models: { set: vi.fn((_providerID, models) => published.push(models.map((model: { id: string }) => model.id))) },
-      })
-    })
-
+  beforeEach(() => inventorySnapshotTestUtils.reset())
+  it.each([
+    ['HTTP error', { ok: false }, 1],
+    ['invalid payload', { ok: true, json: async () => ({ data: 'invalid' }) }, 1],
+    ['invalid model', { ok: true, json: async () => ({ data: [{ name: 'missing-id' }] }) }, 1],
+    ['valid empty list', { ok: true, json: async () => ({ data: [] }) }, 0],
+  ])('keeps the snapshot on %s and accepts a valid empty replacement', async (_name, response, expected) => {
+    const fetcher = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'stable' }] }) } as Response)
+      .mockResolvedValueOnce(response as Response)
+    const handlers: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
+    const ctx = context({ rpc: { register: vi.fn(async (_definition, registered) => Object.assign(handlers, registered)) } })
     try {
-      const setup = plugin.setup(ctx as never)
-      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
-      // Simulate session/catalog observation while discovery is still pending.
-      expect(ctx.provider.transform).not.toHaveBeenCalled()
-      expect(ctx.integration.transform).not.toHaveBeenCalled()
-      expect(ctx.integration.reload).not.toHaveBeenCalled()
-      expect(ctx.provider.reload).not.toHaveBeenCalled()
+      await plugin.setup(ctx as never)
+      const result = await handlers.refresh({ force: true })
+      expect(result).toEqual({ providers: 1, models: expected })
+      expect(ctx.provider.reload).toHaveBeenCalledTimes(expected === 0 ? 2 : 1)
+    } finally { fetcher.mockRestore() }
+  })
 
-      release({ ok: true, json: async () => ({ data: [{ id: "stable-model" }] }) } as Response)
-      await setup
+  it("restores a successful snapshot before a delayed reload request, then keeps it on failure", async () => {
+    const values = new Map<string, unknown>()
+    const storage = {
+      get: vi.fn(async (key: string) => values.get(key)),
+      set: vi.fn(async (key: string, value: unknown) => { values.set(key, value) }),
+    }
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true, json: async () => ({ data: [{ id: "stable-model" }] }),
+    } as Response)
+    let release!: (response: Response) => void
+    try {
+      await plugin.setup(context({ storage }) as never)
+      expect(values.size).toBe(1)
+      // Model a process restart, not just reuse of the module memory cache.
+      inventorySnapshotTestUtils.reset()
+      fetcher.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve }))
+      const published: string[][] = []
+      const ctx = context({ storage })
+      ctx.provider.transform.mockImplementation(async (callback) => {
+        callback({
+          get: vi.fn().mockReturnValue(undefined), add: vi.fn(), update: vi.fn(),
+          models: { set: vi.fn((_id, models) => published.push(models.map((model: { id: string }) => model.id))) },
+        })
+      })
+      const setup = plugin.setup(ctx as never)
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+      expect(ctx.provider.transform).toHaveBeenCalledTimes(1)
       expect(published).toEqual([["stable-model"]])
-      expect(ctx.provider.reload).toHaveBeenCalledTimes(1)
-    } finally {
+      expect(ctx.provider.reload).not.toHaveBeenCalled()
       release({ ok: false } as Response)
+      await setup
+      expect(ctx.provider.reload).not.toHaveBeenCalled()
+      expect(storage.set).toHaveBeenCalledTimes(1)
+    } finally {
+      release?.({ ok: false } as Response)
       fetcher.mockRestore()
     }
   })

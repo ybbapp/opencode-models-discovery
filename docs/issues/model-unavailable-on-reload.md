@@ -1,6 +1,6 @@
 # Model unavailable during plugin loading: investigation
 
-Status: reproduced with `@ybbapp/opencode-models-discovery@2.1.3`. An initial-publication mitigation is implemented on this PR branch, but an isolated real-host test still reproduces a model-resolution failure before plugin setup settles. This is not a complete fix.
+Status: reproduced with `@ybbapp/opencode-models-discovery@2.1.3`. A last-successful-inventory snapshot is implemented on this PR branch, but an isolated real-host test still reproduces a model-resolution failure before provider configuration and plugin setup settle. This is not a complete fix.
 
 ## Observed failure
 
@@ -50,30 +50,38 @@ The leading hypothesis is a lifecycle readiness race: session selection can obse
 - Verify the host's contract for awaiting plugin setup before selecting a session model. A unit mock where `provider.reload` is a no-op cannot verify that contract.
 - A fix must ensure either a valid previous snapshot remains usable or session resolution waits for the relevant initial catalog. Avoid retaining models across unrelated provider credentials or locations, and preserve intentional removal/filter semantics.
 
-## Implementation and test results
+## Current implementation: retain and restore successful inventory
 
-The initial-publication change removes eager transform registration from setup and provider synchronization. `replaceInventory` installs the discovered, overridden snapshot before registering transforms and performing the provider reload. This prevents registration from publishing this controller's empty initial inventory while its first discovery request is pending. Subsequent refreshes continue to use the existing registered transforms and previous inventory.
+The earlier deferred-registration approach is superseded. Transforms are registered with a locally restored successful snapshot before the network request starts; there is no discovery-readiness gate or sleep added to user requests.
 
-A delayed-response unit regression failed against the previous code because provider transforms were registered before the discovery response arrived. With the change, no provider/integration transform or integration reload is issued by this setup while the response is pending; the first provider transform sees `stable-model`. The full build passes 355 tests across 43 test files, type checking, and compilation, with the existing 20 lint warnings.
+- Store baseline discovered models separately from overrides. Restore and reapply current overrides on setup before exposing discovery RPC/tools.
+- Scope the snapshot by project directory, provider ID/package/settings, and the resolved credential, using a SHA-256 storage key. Raw credentials are not stored in snapshot keys or values. A changed endpoint/filter/account does not reuse the old snapshot.
+- Keep the snapshot independently from the optional TTL request cache. Disabling request caching or issuing a force refresh does not discard the fallback.
+- Replace baseline inventory and the persisted snapshot only after a successful, valid response. An HTTP error, timeout, malformed payload, or invalid model entry retains the prior models. A valid empty list is a successful replacement.
+- A snapshot write failure leaves the prior persisted value intact; the successful response remains available in memory. Explicit provider removal or credential/configuration changes may remove an old inventory independently of network success.
+- The existing raw-response cache now also validates a credential hash, preventing another account's cached response from overwriting the correctly scoped fallback.
 
-### Remaining host readiness gap
+## Validation
 
-An independent OpenCode service was launched with temporary XDG/config paths, this branch's compiled local plugin, a loopback mock provider, and discovery caching disabled. The mock `/v1/models` response was delayed by 1.5 seconds. No user provider credentials or production inference endpoint was used.
+`npm run build` passes 363 tests in 44 files, type checking, and compilation, with 20 pre-existing lint warnings. New tests cover restoring after a module-memory reset, early transform registration with a restored inventory while a request is pending, failed refresh without a catalog replacement, malformed responses, successful empty responses, identity isolation, corrupted snapshots, and a failed snapshot write.
 
-With the initial-publication change applied:
+### Remaining real-host failure
 
-1. During the pending discovery response, the host's model-list API returned HTTP 200 with 13 built-in models, without `local/stable-model`.
-2. The plugin's status RPC was already callable and reported zero discovered models.
-3. A valid `POST /api/experimental/generate/text` specifying `{ "providerID": "local", "id": "stable-model" }` returned HTTP 404 with `ModelNotFoundError: Model not found: local/stable-model`.
-4. After discovery completed, the catalog contained 14 models, including `stable-model`.
+Run the manual reproduction after compiling:
 
-The standalone generation endpoint is a real host model-resolution probe, not the original session-runner path. It demonstrates that the host serves model-resolution requests before plugin setup finishes; it does not by itself prove the same readiness contract applies to every session hook. Deferring transform registration is insufficient to eliminate this window.
+```sh
+npm run compile
+node scripts/reproduce-v2-reload.mjs
+```
 
-### Next fix steps
+It starts an independent OpenCode service with temporary XDG/config directories, the local compiled plugin, and a loopback provider. No user credentials or real inference endpoint are used. Discovery is delayed by 1.5 seconds. After obtaining a successful inventory, it switches discovery to HTTP 503 and reloads the project location. A nonzero exit reports an observed missing model, not a passing integration test.
 
-- Verify whether the session `prompt` hook executes before model selection, including restored inbox turns. If it does, assess a setup-readiness gate scoped to this plugin context; a hook registered after the host has already dispatched the turn cannot protect it.
-- Inspect the host's session/model readiness contract and determine whether model resolution must await relevant plugin setup. An async provider transform is not supported by the current plugin SDK.
-- Keep the first-publication regression, then add a host-level regression asserting a session request waits rather than fails while initial discovery is delayed. Include plugin reinitialization and restored sessions, not just standalone generation.
-- Validate any readiness gate against initialization failure, disposal, credential changes, and discovery timeouts so requests cannot wait indefinitely or receive another account's inventory.
+The latest real-host result still shows:
 
-A passing initialized-instance refresh test, the new unit regression, or the initial-publication mitigation must not be reported as proof that the lifecycle issue is resolved. Keep this PR in draft until the remaining readiness gap has an accepted resolution.
+1. On a genuinely cold setup, the host returns 13 built-in models before discovery completes. A valid standalone generation probe returns 404 `ModelNotFoundError`; the successful response later adds the mock model (14 total).
+2. Immediately after location reload, the discovery RPC can be unavailable, or report zero providers, while provider configuration is still being established. The model catalog can again contain only the 13 built-in models.
+3. The snapshot cannot safely restore a provider that the host has not yet identified/configured. Treating every empty provider listing as a transient error could resurrect an intentionally removed provider or models from a different account.
+
+This is distinct from a failed network refresh of a known provider, which the snapshot tests cover. The plugin now preserves/restores last-success state for a known matching identity, but that does not establish host readiness before plugin/provider initialization. The original session-runner incident remains unresolved at that boundary. Do not report the successful unit suite as proof that all `ModelUnavailableError` failures are fixed.
+
+Keep the PR in draft. The remaining investigation is the host's provider readiness and plugin replacement contract; no request delay or session hook gate is introduced in this implementation.

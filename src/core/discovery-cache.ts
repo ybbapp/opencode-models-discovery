@@ -8,6 +8,7 @@ export interface DiscoveryCacheIdentity {
   readonly endpoint: string
   readonly modelInfoFormat?: string
   readonly modelInfoEndpoint?: string
+  readonly credentialHash?: string
 }
 
 export interface DiscoveryCacheEntry {
@@ -51,6 +52,7 @@ export function parseDiscoveryCacheEntry(
     entry.identity.endpoint !== identity.endpoint ||
     !sameOptional(entry.identity.modelInfoFormat, identity.modelInfoFormat) ||
     !sameOptional(entry.identity.modelInfoEndpoint, identity.modelInfoEndpoint) ||
+    !sameOptional(entry.identity.credentialHash, identity.credentialHash) ||
     !isDiscoveryCacheFresh(entry.fetchedAt, ttlSeconds, now) ||
     !Array.isArray(entry.rawModels) ||
     !entry.enrichments || typeof entry.enrichments !== 'object' || Array.isArray(entry.enrichments)) {
