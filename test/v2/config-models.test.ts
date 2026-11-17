@@ -1,12 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { parse } from 'jsonc-parser'
-import { persistConfigModels } from '../../src/v2/config-models.js'
+import { persistedConfigPath, persistConfigModels } from '../../src/v2/config-models.js'
 import type { DiscoveredV2Model } from '../../src/v2/catalog.js'
 
 const directories: string[] = []
+afterEach(() => vi.unstubAllEnvs())
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => fs.rm(path, { recursive: true, force: true }))) })
 const options = { enabled: true, persistModels: { enabled: true } }
 const provider = { id: 'local', package: 'compatible', settings: { baseURL: 'http://example.test/v1', apiKey: 'test-secret', modelsDiscovery: options } }
@@ -19,6 +20,24 @@ async function fixture() {
   await fs.writeFile(file, '// retain this comment\n'+JSON.stringify({ providers: { local: { ...provider, id: undefined, models: { manual: { name: 'Manual' } } } } }, null, 2))
   return { directory, file, read: async () => parse(await fs.readFile(file, 'utf8')) }
 }
+
+describe('configuration path resolution', () => {
+  it('expands home-relative paths and keeps project-relative and absolute paths', () => {
+    expect(persistedConfigPath({ enabled: true, path: '~/.config/opencode/opencode.jsonc' }, '/project')).toBe(join(homedir(), '.config/opencode/opencode.jsonc'))
+    expect(persistedConfigPath({ enabled: true, path: './opencode.jsonc' }, '/project')).toBe('/project/opencode.jsonc')
+    expect(persistedConfigPath({ enabled: true, path: '../opencode.jsonc' }, '/project/nested')).toBe('/project/opencode.jsonc')
+    expect(persistedConfigPath({ enabled: true, path: '/global/opencode.jsonc' }, '/project')).toBe('/global/opencode.jsonc')
+    expect(persistedConfigPath({ enabled: true, path: './opencode.jsonc' })).toBe(resolve('opencode.jsonc'))
+  })
+  it('expands home paths in environment fallbacks and preserves explicit-path precedence', () => {
+    vi.stubEnv('OPENCODE_CONFIG', '~/custom/opencode.jsonc')
+    expect(persistedConfigPath({ enabled: true })).toBe(join(homedir(), 'custom/opencode.jsonc'))
+    expect(persistedConfigPath({ enabled: true, path: './local.jsonc' }, '/project')).toBe('/project/local.jsonc')
+    vi.stubEnv('OPENCODE_CONFIG', '')
+    vi.stubEnv('OPENCODE_CONFIG_DIR', '~/custom-config')
+    expect(persistedConfigPath({ enabled: true })).toBe(join(homedir(), 'custom-config/opencode.jsonc'))
+  })
+})
 
 describe('persist successful models to JSONC', () => {
   it('adds generated models, preserves manual entries/comments and makes unchanged refresh a no-op', async () => {

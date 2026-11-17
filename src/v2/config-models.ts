@@ -31,9 +31,14 @@ function projection(model: DiscoveredV2Model): Record<string, unknown> {
   }
 }
 export function persistedConfigPath(options: NonNullable<ProviderDiscoveryOptions['persistModels']>, directory?: string): string {
+  const resolvePath = (value: string): string => {
+    if (value === '~') return homedir()
+    if (value.startsWith('~/')) return resolve(homedir(), value.slice(2))
+    return isAbsolute(value) ? value : resolve(directory ?? process.cwd(), value)
+  }
   const configured = options.path ?? process.env.OPENCODE_CONFIG
-  if (configured) return isAbsolute(configured) ? configured : resolve(directory ?? process.cwd(), configured)
-  return join(process.env.OPENCODE_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode'), 'opencode.jsonc')
+  if (configured) return resolvePath(configured)
+  return resolvePath(join(process.env.OPENCODE_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode'), 'opencode.jsonc'))
 }
 
 function update(text: string, provider: CatalogProvider, models: ReadonlyMap<string, DiscoveredV2Model>): string {
