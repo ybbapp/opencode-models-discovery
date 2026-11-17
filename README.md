@@ -145,6 +145,23 @@ Frequently used options:
 
 See the [full configuration reference](docs/configuration.md) for defaults, filter semantics, cache behavior, model assembly, and V1/V2 differences.
 
+## Refresh behavior and verification
+
+On OpenCode v2, discovery refresh keeps the current model inventory available until the new inventory is ready. If a provider request fails, the plugin retains that provider's last known inventory. These protections predate this fork's `2.1.3` release: failure retention was added in `4fcb883` on October 13, 2026, and deferred catalog reload in `7fbc9af` on October 18, 2026; both are included in upstream `v2.0.0`.
+
+Local verification of `@ybbapp/opencode-models-discovery@2.1.3` on November 17, 2026 used Herdr Core terminals against the running OpenCode service:
+
+| Scenario | Concurrent terminals | Forced refreshes |
+|---|---:|---:|
+| Three different project directories | 3 | 15 |
+| The same project directory | 3 | 15 |
+
+Each terminal also ran two concurrent model-directory readers. Across 246 reads, the catalog remained at 249 models, and `sub2api/deepseek-v4-1-flash-261017` remained available. All 30 forced refreshes succeeded. This test did not reproduce a temporary missing model; it did not exercise inference requests during refresh, configuration reloads, service restarts, or provider failures, and does not establish that every historical `ModelUnavailableError` is fixed.
+
+## npm release
+
+The public package is `@ybbapp/opencode-models-discovery`. Version `2.1.3` was published with the npm dist-tag `latest`. Use `@ybbapp/opencode-models-discovery@2.1.3` to pin that release, or `@ybbapp/opencode-models-discovery@latest` to follow the stable dist-tag. npm dist-tags are separate from Git tags; this local publication did not create a Git tag.
+
 ## Documentation
 
 - [Configuration Guide](docs/configuration.md)
