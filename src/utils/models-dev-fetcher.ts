@@ -1,8 +1,14 @@
+export type ModelsDevReasoningOption =
+  | { readonly type: 'toggle' }
+  | { readonly type: 'effort'; readonly values: string[] }
+  | { readonly type: 'budget_tokens'; readonly min?: number; readonly max?: number }
+
 export interface ModelsDevModel {
   id: string
   name?: string
   attachment?: boolean
   reasoning?: boolean
+  reasoning_options?: ModelsDevReasoningOption[]
   tool_call?: boolean
   structured_output?: boolean
   temperature?: boolean
@@ -18,13 +24,52 @@ export interface ModelsDevModel {
 }
 
 export const DEFAULT_MODELS_DEV_URL = 'https://models.dev/models.json'
+/**
+ * models.dev's v2 catalog exposes reasoning controls (`toggle`, `effort`,
+ * `budget_tokens`) as `reasoning_options`. The flat legacy feed used for model
+ * metadata does not carry them, so they are fetched separately and merged only
+ * when a single provider can be identified.
+ */
+export const DEFAULT_MODELS_DEV_REASONING_URL = 'https://models.dev/api.json'
 const PREFIX_MATCH_MIN_SCORE = 70
 const PREFIX_MATCH_MIN_SHARED_PARTS = 2
+const MODELS_DEV_TIMEOUT_MS = 3000
+const MODELS_DEV_REASONING_TIMEOUT_MS = 5000
 
 const modelsDevCaches = new Map<string, Map<string, ModelsDevModel>>()
+const modelsDevReasoningCaches = new Map<string, Map<string, ModelsDevModel>>()
 
 function isObject(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function addReasoningOption(options: ModelsDevReasoningOption[], value: unknown): void {
+  if (!isObject(value) || typeof value.type !== 'string') return
+  if (value.type === 'toggle') {
+    options.push({ type: 'toggle' })
+    return
+  }
+  if (value.type === 'effort') {
+    const values = Array.isArray(value.values)
+      ? value.values.filter((item: unknown): item is string => typeof item === 'string' && item.length > 0)
+      : []
+    if (values.length > 0) options.push({ type: 'effort', values })
+    return
+  }
+  if (value.type === 'budget_tokens') {
+    options.push({
+      type: 'budget_tokens',
+      ...(typeof value.min === 'number' && Number.isFinite(value.min) ? { min: value.min } : {}),
+      ...(typeof value.max === 'number' && Number.isFinite(value.max) ? { max: value.max } : {}),
+    })
+  }
+}
+
+function parseReasoningOptions(value: unknown): ModelsDevReasoningOption[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const options: ModelsDevReasoningOption[] = []
+  for (const item of value) addReasoningOption(options, item)
+  return options.length > 0 ? options : undefined
 }
 
 function toModelId(providerId: string | undefined, modelId: string): string {
@@ -43,6 +88,7 @@ function addModel(cache: Map<string, ModelsDevModel>, providerId: string | undef
     name: typeof rawModel.name === 'string' ? rawModel.name : undefined,
     attachment: typeof rawModel.attachment === 'boolean' ? rawModel.attachment : undefined,
     reasoning: typeof rawModel.reasoning === 'boolean' ? rawModel.reasoning : undefined,
+    reasoning_options: parseReasoningOptions(rawModel.reasoning_options),
     tool_call: typeof rawModel.tool_call === 'boolean' ? rawModel.tool_call : undefined,
     structured_output: typeof rawModel.structured_output === 'boolean' ? rawModel.structured_output : undefined,
     temperature: typeof rawModel.temperature === 'boolean' ? rawModel.temperature : undefined,
@@ -85,14 +131,18 @@ function parseModelsDevData(data: unknown): Map<string, ModelsDevModel> {
   return cache
 }
 
-export async function fetchModelsDevData(url: string = DEFAULT_MODELS_DEV_URL): Promise<Map<string, ModelsDevModel>> {
-  const cached = modelsDevCaches.get(url)
+async function fetchModelsDevCache(
+  url: string,
+  timeoutMs: number,
+  caches: Map<string, Map<string, ModelsDevModel>>,
+): Promise<Map<string, ModelsDevModel>> {
+  const cached = caches.get(url)
   if (cached) return cached
 
   try {
     const response = await fetch(url, {
       method: 'GET',
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
 
     if (!response.ok) {
@@ -100,11 +150,23 @@ export async function fetchModelsDevData(url: string = DEFAULT_MODELS_DEV_URL): 
     }
 
     const models = parseModelsDevData(await response.json())
-    modelsDevCaches.set(url, models)
+    caches.set(url, models)
     return models
   } catch {
     return new Map()
   }
+}
+
+export function fetchModelsDevData(url: string = DEFAULT_MODELS_DEV_URL): Promise<Map<string, ModelsDevModel>> {
+  return fetchModelsDevCache(url, MODELS_DEV_TIMEOUT_MS, modelsDevCaches)
+}
+
+/**
+ * Fetches models.dev's v2 catalog for reasoning controls. Best-effort: an
+ * unreachable or malformed feed degrades to "no reasoning options".
+ */
+export function fetchModelsDevReasoningData(url: string = DEFAULT_MODELS_DEV_REASONING_URL): Promise<Map<string, ModelsDevModel>> {
+  return fetchModelsDevCache(url, MODELS_DEV_REASONING_TIMEOUT_MS, modelsDevReasoningCaches)
 }
 
 function splitModelId(modelId: string): { provider?: string; model: string } {
@@ -259,9 +321,51 @@ export function lookupModelsDevData(
   return findBestPrefixMatch(variants, allCandidates)
 }
 
+/**
+ * Resolves reasoning controls from the v2 catalog for a discovered model id.
+ *
+ * Provider-scoped matches win. Otherwise a bare model id is only accepted when
+ * exactly one provider advertises it, or when every provider advertises the
+ * same controls. That avoids sending an effort tier the configured provider may
+ * not accept.
+ */
+export function lookupModelsDevReasoningOptions(
+  modelId: string,
+  cache: Map<string, ModelsDevModel>,
+): ModelsDevReasoningOption[] | undefined {
+  if (cache.size === 0) return undefined
+
+  let cleanId = modelId.replace(/:[a-zA-Z0-9_-]+$/g, '')
+  const parts = cleanId.split('/')
+  if (parts.length > 2) cleanId = parts.slice(-2).join('/')
+
+  const { provider, model } = splitModelId(cleanId)
+  const variants = generateModelIdVariants(model)
+
+  for (const variant of variants) {
+    const fullVariant = provider ? `${provider}/${variant}` : variant
+    const match = cache.get(fullVariant) ?? cache.get(fullVariant.toLowerCase())
+    if (match?.reasoning_options?.length) return match.reasoning_options
+  }
+
+  const candidates = [...cache.entries()].map(([key, value]) => [splitModelId(key).model.toLowerCase(), value] as const)
+  for (const variant of variants) {
+    const requested = variant.toLowerCase()
+    const matches = candidates.filter(([candidate]) => candidate === requested)
+    if (matches.length === 0) continue
+    const options = matches.map(([, match]) => match.reasoning_options)
+    const first = options[0]
+    if (!first?.length) continue
+    if (options.every((candidate) => JSON.stringify(candidate) === JSON.stringify(first))) return first
+  }
+
+  return undefined
+}
+
 export const modelsDevTestUtils = {
   parseModelsDevData,
   resetCache(): void {
     modelsDevCaches.clear()
+    modelsDevReasoningCaches.clear()
   },
 }

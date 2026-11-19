@@ -120,7 +120,7 @@ Example using `models.dev`:
 }
 ```
 
-`models.dev` uses `https://models.dev/models.json` by default and supports a custom `modelInfoEndpoint`. Provider-specific formats read metadata from the provider's own response or endpoint. See [Model Metadata Enrichment](docs/configuration.md#model-metadata-enrichment) for format-specific paths and behavior.
+`models.dev` uses `https://models.dev/models.json` by default and supports a custom `modelInfoEndpoint`. It also reads reasoning effort tiers from models.dev's v2 catalog (`https://models.dev/api.json`) when the default endpoint is used. Provider-specific formats read metadata from the provider's own response or endpoint. See [Model Metadata Enrichment](docs/configuration.md#model-metadata-enrichment) for format-specific paths and behavior.
 
 ## Common options
 

@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fetchModelsDevData, lookupModelsDevData, modelsDevTestUtils } from '../src/utils/models-dev-fetcher.ts'
+import {
+  fetchModelsDevData,
+  fetchModelsDevReasoningData,
+  lookupModelsDevData,
+  lookupModelsDevReasoningOptions,
+  modelsDevTestUtils,
+} from '../src/utils/models-dev-fetcher.ts'
 
 describe('models.dev fetcher', () => {
   beforeEach(() => {
@@ -24,6 +30,32 @@ describe('models.dev fetcher', () => {
       tool_call: true,
       limit: { context: 128000, input: undefined, output: 16384 }
     }))
+  })
+
+  it('should parse v2 reasoning options', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      deepseek: {
+        models: {
+          'deepseek-flash': {
+            id: 'deepseek-flash',
+            reasoning: true,
+            reasoning_options: [
+              { type: 'toggle' },
+              { type: 'effort', values: ['low', 'high', 'max'] },
+              { type: 'budget_tokens', min: 128, max: 1024 },
+              { type: 'unknown' },
+              { type: 'effort', values: ['', 42] },
+            ],
+          }
+        }
+      }
+    })
+
+    expect(cache.get('deepseek/deepseek-flash')?.reasoning_options).toEqual([
+      { type: 'toggle' },
+      { type: 'effort', values: ['low', 'high', 'max'] },
+      { type: 'budget_tokens', min: 128, max: 1024 },
+    ])
   })
 
   it('should parse flat models.dev data keyed by model id', () => {
@@ -258,6 +290,61 @@ describe('models.dev fetcher', () => {
 
     expect(defaultModels.has('test/default-model')).toBe(true)
     expect(mirrorModels.has('test/mirror-model')).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    fetchMock.mockRestore()
+  })
+
+  it('should resolve reasoning controls without guessing across providers', () => {
+    const unique = modelsDevTestUtils.parseModelsDevData({
+      byteplus: {
+        models: {
+          'deepseek-v4-1-flash-261017': {
+            id: 'deepseek-v4-1-flash-261017',
+            reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
+          }
+        }
+      }
+    })
+    expect(lookupModelsDevReasoningOptions('deepseek-v4-1-flash-261017', unique)).toEqual([
+      { type: 'toggle' },
+      { type: 'effort', values: ['low', 'high', 'max'] },
+    ])
+
+    const identical = modelsDevTestUtils.parseModelsDevData({
+      providerA: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high'] }] } } },
+      providerB: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high'] }] } } },
+    })
+    expect(lookupModelsDevReasoningOptions('shared-model', identical)).toEqual([
+      { type: 'effort', values: ['low', 'high'] },
+    ])
+
+    const conflicting = modelsDevTestUtils.parseModelsDevData({
+      providerA: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high'] }] } } },
+      providerB: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }] } } },
+    })
+    expect(lookupModelsDevReasoningOptions('shared-model', conflicting)).toBeUndefined()
+  })
+
+  it('should fetch and cache the reasoning catalog separately', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const value = String(url).endsWith('/api.json')
+        ? { byteplus: { models: { 'reasoning-model': {
+            id: 'reasoning-model',
+            reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
+          } } } }
+        : { test: { models: { 'reasoning-model': { id: 'reasoning-model', reasoning: true } } } }
+      return new Response(JSON.stringify(value))
+    })
+
+    const models = await fetchModelsDevData()
+    const reasoning = await fetchModelsDevReasoningData()
+    await fetchModelsDevReasoningData()
+
+    expect(models.get('test/reasoning-model')?.reasoning).toBe(true)
+    expect(lookupModelsDevReasoningOptions('reasoning-model', reasoning)).toEqual([
+      { type: 'toggle' },
+      { type: 'effort', values: ['low', 'high', 'max'] },
+    ])
     expect(fetchMock).toHaveBeenCalledTimes(2)
     fetchMock.mockRestore()
   })

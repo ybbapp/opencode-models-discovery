@@ -1,6 +1,10 @@
 import { ModelInfoFormat } from '../types/plugin-config'
-import { createDeferredModelEnricher, createModelEnricher, isSupportedModelInfoFormat, type ModelEnricher } from '../utils/model-info/index'
-import { fetchModelsDevData, DEFAULT_MODELS_DEV_URL } from '../utils/models-dev-fetcher'
+import { createDeferredModelEnricher, createModelEnricher, createModelsDevEnricher, isSupportedModelInfoFormat, type ModelEnricher } from '../utils/model-info/index'
+import {
+  fetchModelsDevData,
+  fetchModelsDevReasoningData,
+  DEFAULT_MODELS_DEV_URL,
+} from '../utils/models-dev-fetcher'
 import { buildModelInfoURL } from './model-info-url'
 
 export { buildModelInfoURL } from './model-info-url'
@@ -54,11 +58,19 @@ export async function resolveModelInfoEnricher(
   if (format === ModelInfoFormat.ModelsDev || format === ModelInfoFormat.AIProxy) {
     const endpoint = options.endpoint ?? DEFAULT_MODELS_DEV_URL
     const data = await fetchModelsDevData(endpoint)
-    const enricher = createModelEnricher(format, data, { filterNonChat })
+    // Reasoning controls live only in models.dev's v2 catalog. A mirrored or
+    // custom endpoint is trusted as-is because it may use another schema.
+    const reasoning = format === ModelInfoFormat.ModelsDev && endpoint === DEFAULT_MODELS_DEV_URL && data.size > 0
+      ? await fetchModelsDevReasoningData()
+      : undefined
+    const enricher = format === ModelInfoFormat.ModelsDev
+      ? createModelsDevEnricher(data, reasoning)
+      : createModelEnricher(format, data, { filterNonChat })
     context.logger?.info?.('Loaded models.dev data', {
       provider: context.providerName,
       endpoint,
       count: data.size,
+      reasoningCount: reasoning?.size ?? 0,
     })
     return enricher
   }

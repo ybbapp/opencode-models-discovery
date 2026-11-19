@@ -14,6 +14,20 @@ const provider = { id: 'local', package: 'compatible', settings: { baseURL: 'htt
 function models(id = 'stable', name = 'Stable'): Map<string, DiscoveredV2Model> {
   return new Map([[id, { id, modelID: id, name, capabilities: { tools: true, input: ['text'], output: ['text'] }, limit: { context: 32000, output: 8000 } }]])
 }
+function modelsWithVariants(): Map<string, DiscoveredV2Model> {
+  return new Map([['stable', {
+    id: 'stable',
+    modelID: 'stable',
+    name: 'Stable',
+    capabilities: { tools: true, input: ['text'], output: ['text'] },
+    limit: { context: 32000, output: 8000 },
+    reasoning: true,
+    variants: [
+      { id: 'low', settings: { reasoningEffort: 'low' } },
+      { id: 'high', settings: { reasoningEffort: 'high' } },
+    ],
+  }]])
+}
 async function fixture() {
   const directory = await fs.mkdtemp(join(tmpdir(), 'config-models-test-')); directories.push(directory)
   const file = join(directory, 'opencode.jsonc')
@@ -51,6 +65,17 @@ describe('persist successful models to JSONC', () => {
     expect(await fs.readFile(f.file, 'utf8')).toBe(original)
     expect((await fs.stat(f.file)).mtimeMs).toBe(stat.mtimeMs)
     expect((await fs.readdir(f.directory))).toEqual(['opencode.jsonc'])
+  })
+  it('persists reasoning variants so the effort picker survives reload', async () => {
+    const f = await fixture()
+    expect(await persistConfigModels(f.file, provider, modelsWithVariants())).toBe(true)
+    const saved = await f.read()
+    expect(saved.providers.local.models.stable.variants).toEqual([
+      { id: 'low', settings: { reasoningEffort: 'low' } },
+      { id: 'high', settings: { reasoningEffort: 'high' } },
+    ])
+    expect(saved.providers.local.models.stable.capabilities.reasoning).toEqual({ supported: true })
+    expect(await persistConfigModels(f.file, provider, modelsWithVariants())).toBe(false)
   })
   it('updates/removes only unchanged managed entries and accepts a successful empty inventory', async () => {
     const f = await fixture()

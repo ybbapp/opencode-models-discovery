@@ -28,6 +28,18 @@ function projection(model: DiscoveredV2Model): Record<string, unknown> {
       tools: model.capabilities.tools, input: model.capabilities.input, output: model.capabilities.output,
       ...(typeof model.reasoning === 'boolean' ? { reasoning: { supported: model.reasoning } } : {}),
     },
+    // Persist variants so OpenCode can rebuild the effort/variant picker after
+    // a reload. Without them the model only advertises `reasoning.supported`.
+    ...(model.variants && model.variants.length > 0
+      ? {
+          variants: model.variants.map((variant) => ({
+            id: variant.id,
+            ...(variant.settings && Object.keys(variant.settings).length > 0 ? { settings: variant.settings } : {}),
+            ...(variant.body ? { body: variant.body } : {}),
+            ...(variant.headers && Object.keys(variant.headers).length > 0 ? { headers: variant.headers } : {}),
+          })),
+        }
+      : {}),
   }
 }
 export function persistedConfigPath(options: NonNullable<ProviderDiscoveryOptions['persistModels']>, directory?: string): string {
