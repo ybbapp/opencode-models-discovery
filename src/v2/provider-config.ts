@@ -18,6 +18,11 @@ export interface ProviderDiscoveryOptions {
   readonly modelInfoFormat?: ModelInfoFormat
   readonly modelInfoEndpoint?: string
   readonly filterNonChat: boolean
+  readonly pruneMissing: boolean
+  readonly persistModels?: {
+    readonly enabled: true
+    readonly path?: string
+  }
   readonly cache?: {
     readonly enabled: boolean
     readonly ttlSeconds: number
@@ -106,6 +111,10 @@ export function parseProviderDiscoveryOptions(raw: unknown): ProviderDiscoveryOp
     modelInfoFormat,
     modelInfoEndpoint,
     filterNonChat,
+    pruneMissing: value.pruneMissing === true,
+    persistModels: object(value.persistModels)?.enabled === true
+      ? { enabled: true, path: typeof object(value.persistModels)?.path === 'string' ? object(value.persistModels)!.path as string : undefined }
+      : undefined,
     cache,
   }
 }

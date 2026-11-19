@@ -119,6 +119,7 @@ Each provider can configure discovery behavior through `provider.<name>.options.
 | `provider.<name>.options.modelsDiscovery.modelInfoEndpoint` | `string` | Override a format-specific metadata endpoint as an origin-relative path or complete URL. Defaults to `/v1/model/info` for `"litellm"`, `/api/v1/models` for `"lmstudio"`, and `/api/show` for `"ollama"`; for `"aiproxy"`, it overrides the models.dev fallback URL |
 | `provider.<name>.options.modelsDiscovery.modelInfoFormat` | `string` | Model info response format. Currently supports `"aiproxy"`, `"bifrost"`, `"litellm"`, `"models.dev"`, `"vllm"`, `"lmstudio"`, `"llama-swap"`, `"omniroute"`, `"openrouter"`, and `"ollama"` |
 | `provider.<name>.options.modelsDiscovery.filterNonChat` | `boolean` | When model info is available, skip models whose `model_info.mode` is not `chat`. Defaults to `true` |
+| `provider.<name>.options.modelsDiscovery.pruneMissing` | `boolean` | OpenCode v2 only. Remove models from the provider's catalog when the provider's models endpoint doesn't list them by `id` or `modelID`, including ones excluded by the filters below. The plugin can't tell config-declared models from built-in ones, so any model it sees is pruned the same way; on OpenCode 2.2.5, models declared in `provider.<name>.models` were applied after the plugin and stayed. A failed refresh reuses the last successful list, and nothing is removed until one succeeds. Defaults to `false` |
 | `provider.<name>.options.modelsDiscovery.models.includeRegex` | `string[]` | Shortcut regex allow-list for discovered model ids only |
 | `provider.<name>.options.modelsDiscovery.models.excludeRegex` | `string[]` | Shortcut regex deny-list for discovered model ids only |
 | `provider.<name>.options.modelsDiscovery.models.includeBy` | `{ field: string, equals: string \| number \| boolean \| null }[]` or `{ field: string, match: string }[]` | Allow-list for top-level raw provider model fields |
@@ -362,7 +363,7 @@ The plugin currently supports ten model info formats:
 | `"aiproxy"` | AIProxy's discovered `/models` entries plus models.dev | No | Maps inline AIProxy limits, pricing, and declared effort tiers; models.dev supplies general metadata |
 | `"bifrost"` | Fields in Bifrost's `/v1/models` response | No | Reads Bifrost inline limits, modalities, and base pricing when present |
 | `"litellm"` | Provider-specific model info endpoint | No | Uses `/v1/model/info` by default; set `modelInfoEndpoint` to override it |
-| `"models.dev"` | `https://models.dev/models.json` | No | Uses the public models.dev metadata index |
+| `"models.dev"` | `https://models.dev/models.json` plus `https://models.dev/api.json` | No | Uses the public models.dev metadata index; the v2 catalog supplies reasoning effort variants |
 | `"vllm"` | Fields in the provider's `/v1/models` response | No | Reads vLLM-style `max_model_len` when present |
 | `"lmstudio"` | LM Studio 0.4.0+ `/api/v1/models` inventory | No | Uses `/api/v1/models` by default; set `modelInfoEndpoint` for another path |
 | `"llama-swap"` | Fields in llama-swap's `/v1/models` response | No | Reads inline context, modalities, and function-calling metadata when present |
@@ -686,8 +687,13 @@ When a discovered model can be matched to models.dev metadata, the plugin may po
 - `structured_output`
 - `temperature`
 - `modalities`
+- `variants` (reasoning effort tiers when models.dev advertises them)
 
-The current models.dev data uses a flat `provider/model`-keyed object. Its `limit` object is singular, and its `context`, `input`, and `output` fields are independently optional. `structured_output` and `temperature` may also be omitted; the plugin leaves omitted fields unset rather than inferring `false`. The current models.dev dataset does not provide `variants` metadata.
+The flat `provider/model`-keyed feed at `https://models.dev/models.json` supplies the general metadata above. Its `limit` object is singular, and its `context`, `input`, and `output` fields are independently optional. `structured_output` and `temperature` may also be omitted; the plugin leaves omitted fields unset rather than inferring `false`.
+
+Reasoning controls (`toggle`, `effort`, `budget_tokens`) are not present in the flat feed. When `modelInfoFormat` is `"models.dev"` and no custom `modelInfoEndpoint` is configured, the plugin also fetches models.dev's v2 catalog at `https://models.dev/api.json` and reads each model's `reasoning_options`. Advertised effort tiers become variants such as `low`, `high`, and `max`. To avoid guessing, a bare model id is only accepted when a single provider advertises it, or when every provider advertises identical controls. A custom `modelInfoEndpoint` is used as the only source, so a mirror must expose `reasoning_options` itself to provide variants.
+
+Reasoning variants are persisted with generated model entries when `persistModels` is enabled, so OpenCode can show the effort picker again after a reload.
 
 Matching is intentionally conservative:
 

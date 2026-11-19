@@ -1,9 +1,11 @@
-# opencode-models-discovery
+# @ybbapp/opencode-models-discovery
 
-[![npm version](https://img.shields.io/npm/v/opencode-models-discovery.svg?color=blue)](https://www.npmjs.com/package/opencode-models-discovery)
-[![npm downloads](https://img.shields.io/npm/dt/opencode-models-discovery.svg)](https://www.npmjs.com/package/opencode-models-discovery)
-[![release](https://github.com/yuhp/opencode-models-discovery/actions/workflows/release.yml/badge.svg)](https://github.com/yuhp/opencode-models-discovery/actions/workflows/release.yml)
-[![license](https://img.shields.io/github/license/yuhp/opencode-models-discovery)](https://github.com/yuhp/opencode-models-discovery/blob/main/LICENSE)
+Personal fork of [yuhp/opencode-models-discovery](https://github.com/yuhp/opencode-models-discovery).
+
+[![npm version](https://img.shields.io/npm/v/@ybbapp/opencode-models-discovery.svg?color=blue)](https://www.npmjs.com/package/@ybbapp/opencode-models-discovery)
+[![npm downloads](https://img.shields.io/npm/dt/@ybbapp/opencode-models-discovery.svg)](https://www.npmjs.com/package/@ybbapp/opencode-models-discovery)
+[![release](https://github.com/ybbapp/opencode-models-discovery/actions/workflows/release.yml/badge.svg)](https://github.com/ybbapp/opencode-models-discovery/actions/workflows/release.yml)
+[![license](https://img.shields.io/github/license/ybbapp/opencode-models-discovery)](https://github.com/ybbapp/opencode-models-discovery/blob/main/LICENSE)
 [![OpenCode v1](https://img.shields.io/badge/OpenCode%20v1-%3E%3D1.18.29-blueviolet)](https://opencode.ai/v1/docs)
 [![OpenCode v2](https://img.shields.io/badge/OpenCode%20v2-%3E%3D2.2.6-blueviolet)](https://opencode.ai/v2/docs/)
 
@@ -29,7 +31,7 @@ OpenCode v2 uses `plugins` and `providers`. Discovery settings belong under `pro
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    "opencode-models-discovery@2.1.2"
+    "@ybbapp/opencode-models-discovery@2.2.0"
   ],
   "providers": {
     "gateway": {
@@ -73,7 +75,7 @@ For OpenCode v1 (`1.18.29+`), use `plugin`, `provider`, and `options`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-models-discovery@2.1.2"],
+  "plugin": ["@ybbapp/opencode-models-discovery@2.2.0"],
   "provider": {
     "lmstudio": {
       "npm": "@ai-sdk/openai-compatible",
@@ -118,7 +120,7 @@ Example using `models.dev`:
 }
 ```
 
-`models.dev` uses `https://models.dev/models.json` by default and supports a custom `modelInfoEndpoint`. Provider-specific formats read metadata from the provider's own response or endpoint. See [Model Metadata Enrichment](docs/configuration.md#model-metadata-enrichment) for format-specific paths and behavior.
+`models.dev` uses `https://models.dev/models.json` by default and supports a custom `modelInfoEndpoint`. It also reads reasoning effort tiers from models.dev's v2 catalog (`https://models.dev/api.json`) when the default endpoint is used. Provider-specific formats read metadata from the provider's own response or endpoint. See [Model Metadata Enrichment](docs/configuration.md#model-metadata-enrichment) for format-specific paths and behavior.
 
 ## Common options
 
@@ -140,8 +142,41 @@ Frequently used options:
 | `smartModelName` | Use provider-supplied human-friendly names when available |
 | `modelInfoFormat` | Enable provider-specific metadata enrichment |
 | `cache.enabled` | Enable provider model caching; disabled by default |
+| `persistModels.enabled` | V2: write successful model definitions to JSONC so they remain available during host reload; disabled by default |
+
+To enable model persistence on OpenCode v2, add this under `providers.<id>.settings.modelsDiscovery` in the configuration file to update:
+
+```jsonc
+"persistModels": {
+  "enabled": true,
+  "path": "/absolute/path/to/opencode.jsonc"
+}
+```
+
+`path` is optional: the plugin uses `OPENCODE_CONFIG`, otherwise `OPENCODE_CONFIG_DIR/opencode.jsonc` or the standard XDG OpenCode config directory. Use an explicit path if your file is named `opencode.json` or providers are configured in a project file. The target must already contain this provider with persistence enabled. Relative paths such as `./opencode.jsonc` resolve from the plugin location. Paths beginning with `~/`, such as `~/.config/opencode/opencode.jsonc`, expand to the current user's home directory; this also applies to environment path fallbacks.
+
+Only successful discovery updates generated entries; failed/invalid responses leave the file untouched. Existing manual models and user-edited generated models are preserved. JSONC comments are retained, writes are atomic and serialized, and unchanged inventories do not touch the file. The plugin stores ownership hashes in `persistModels.managedModels`; leave that metadata to the plugin. Persisted definitions include the upstream model ID, name, limits, tools, input/output modalities, and reasoning support; provider secrets and per-variant request settings are not copied. If you change provider accounts or endpoints, review/remove generated definitions belonging to the previous provider identity before reuse. An interrupted writer may leave a `.models-discovery.lock` beside the file; remove it only after confirming no writer is running.
 
 See the [full configuration reference](docs/configuration.md) for defaults, filter semantics, cache behavior, model assembly, and V1/V2 differences.
+
+## Refresh behavior and verification
+
+**Known issue:** `2.1.3` still reproduced `ModelUnavailableError` in a real session during a plugin-loading window after the checks below. These checks cover refreshes of initialized plugin instances, not readiness during plugin initialization or reload. See [the investigation and regression plan](docs/issues/model-unavailable-on-reload.md). The PR branch adds opt-in `persistModels` synchronization, which passes the isolated reload/inference reproduction by giving the host model definitions in its own config. The original restored-session path remains unverified; persistence must first be enabled and complete one successful discovery.
+
+On OpenCode v2, discovery refresh keeps the current model inventory available until the new inventory is ready. If a provider request fails, the plugin retains that provider's last known inventory. These protections predate this fork's `2.1.3` release: failure retention was added in `4fcb883` on October 13, 2026, and deferred catalog reload in `7fbc9af` on October 18, 2026; both are included in upstream `v2.0.0`.
+
+Local verification of `@ybbapp/opencode-models-discovery@2.1.3` on November 17, 2026 used Herdr Core terminals against the running OpenCode service:
+
+| Scenario | Concurrent terminals | Forced refreshes |
+|---|---:|---:|
+| Three different project directories | 3 | 15 |
+| The same project directory | 3 | 15 |
+
+Each terminal also ran two concurrent model-directory readers. Across 246 reads, the catalog remained at 249 models, and `sub2api/deepseek-v4-1-flash-261017` remained available. All 30 forced refreshes succeeded. This test did not reproduce a temporary missing model; it did not exercise inference requests during refresh, configuration reloads, service restarts, or provider failures, and does not establish that every historical `ModelUnavailableError` is fixed.
+
+## npm release
+
+The public package is `@ybbapp/opencode-models-discovery`. Version `2.2.0` uses the npm dist-tag `latest`. Use `@ybbapp/opencode-models-discovery@2.2.0` to pin that release, or `@ybbapp/opencode-models-discovery@latest` to follow the stable dist-tag. npm dist-tags are separate from Git tags; this local publication did not create a Git tag.
 
 ## Documentation
 

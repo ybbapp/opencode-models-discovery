@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { fetchModelsDevData, lookupModelsDevData, modelsDevTestUtils } from '../src/utils/models-dev-fetcher.ts'
+import {
+  fetchModelsDevData,
+  fetchModelsDevReasoningData,
+  lookupModelsDevData,
+  lookupModelsDevReasoningOptions,
+  modelsDevTestUtils,
+} from '../src/utils/models-dev-fetcher.ts'
 
 describe('models.dev fetcher', () => {
   beforeEach(() => {
@@ -24,6 +30,32 @@ describe('models.dev fetcher', () => {
       tool_call: true,
       limit: { context: 128000, input: undefined, output: 16384 }
     }))
+  })
+
+  it('should parse v2 reasoning options', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      deepseek: {
+        models: {
+          'deepseek-flash': {
+            id: 'deepseek-flash',
+            reasoning: true,
+            reasoning_options: [
+              { type: 'toggle' },
+              { type: 'effort', values: ['low', 'high', 'max'] },
+              { type: 'budget_tokens', min: 128, max: 1024 },
+              { type: 'unknown' },
+              { type: 'effort', values: ['', 42] },
+            ],
+          }
+        }
+      }
+    })
+
+    expect(cache.get('deepseek/deepseek-flash')?.reasoning_options).toEqual([
+      { type: 'toggle' },
+      { type: 'effort', values: ['low', 'high', 'max'] },
+      { type: 'budget_tokens', min: 128, max: 1024 },
+    ])
   })
 
   it('should parse flat models.dev data keyed by model id', () => {
@@ -146,6 +178,106 @@ describe('models.dev fetcher', () => {
     expect(lookupModelsDevData('custom/shared-model', cache)).toBeUndefined()
   })
 
+  it('should preserve exact matches with mixed-case provider keys', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'providerA/shared-model': { tool_call: true },
+      'providerB/shared-model': { tool_call: false }
+    })
+
+    expect(lookupModelsDevData('providerA/shared-model', cache)?.id).toBe('providerA/shared-model')
+  })
+
+  it('should stop when the original segment is ambiguous', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'a/shared-model-1-2': { tool_call: true },
+      'b/shared-model-1-2': { tool_call: false },
+      'c/shared-model-1.2': { tool_call: true }
+    })
+
+    expect(lookupModelsDevData('custom/shared-model-1-2', cache)).toBeUndefined()
+  })
+
+  it('should resolve provider-specific ids against dotted canonical ids', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'deepseek/deepseek-v4.1-flash-1017': {
+        name: 'DeepSeek V4.1 Flash 1017',
+        attachment: true,
+        reasoning: true,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        limit: { context: 1000000, output: 384000 }
+      }
+    })
+
+    expect(lookupModelsDevData('deepseek-v4-1-flash-261017', cache)).toEqual(expect.objectContaining({
+      id: 'deepseek/deepseek-v4.1-flash-1017',
+      attachment: true,
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      limit: { context: 1000000, input: undefined, output: 384000 }
+    }))
+  })
+
+  it('should prefer an exact normalized variant over a weaker family prefix match', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      'deepseek/deepseek-v4.1-flash': {
+        name: 'DeepSeek V4.1 Flash',
+        limit: { context: 1000000, output: 384000 }
+      },
+      'deepseek/deepseek-v4.1-flash-1017': {
+        name: 'DeepSeek V4.1 Flash 1017',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        limit: { context: 1000000, output: 384000 }
+      }
+    })
+
+    expect(lookupModelsDevData('deepseek-v4-1-flash-261017', cache)?.id).toBe('deepseek/deepseek-v4.1-flash-1017')
+  })
+
+  it('should resolve dashed versions of dotted canonical ids', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      anthropic: {
+        models: {
+          'claude-opus-4.5': { id: 'claude-opus-4.5', attachment: true }
+        }
+      }
+    })
+
+    expect(lookupModelsDevData('claude-opus-4-5', cache)?.id).toBe('anthropic/claude-opus-4.5')
+  })
+
+  it('should keep the exact id ahead of normalized variants', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      providerA: {
+        models: {
+          'shared-model-1-2': { id: 'shared-model-1-2', tool_call: true }
+        }
+      },
+      providerB: {
+        models: {
+          'shared-model-1.2': { id: 'shared-model-1.2', tool_call: false }
+        }
+      }
+    })
+
+    expect(lookupModelsDevData('custom/shared-model-1-2', cache)?.id).toBe('providerA/shared-model-1-2')
+  })
+
+  it('should still reject ambiguous ids after normalization', () => {
+    const cache = modelsDevTestUtils.parseModelsDevData({
+      providerA: {
+        models: {
+          'shared-model-1.2': { id: 'shared-model-1.2', tool_call: true }
+        }
+      },
+      providerB: {
+        models: {
+          'shared-model-1.2': { id: 'shared-model-1.2', tool_call: false }
+        }
+      }
+    })
+
+    expect(lookupModelsDevData('custom/shared-model-1-2', cache)).toBeUndefined()
+  })
+
   it('should cache models.dev data separately for each URL', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
       const id = String(url).includes('mirror.example') ? 'mirror-model' : 'default-model'
@@ -158,6 +290,61 @@ describe('models.dev fetcher', () => {
 
     expect(defaultModels.has('test/default-model')).toBe(true)
     expect(mirrorModels.has('test/mirror-model')).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    fetchMock.mockRestore()
+  })
+
+  it('should resolve reasoning controls without guessing across providers', () => {
+    const unique = modelsDevTestUtils.parseModelsDevData({
+      byteplus: {
+        models: {
+          'deepseek-v4-1-flash-261017': {
+            id: 'deepseek-v4-1-flash-261017',
+            reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
+          }
+        }
+      }
+    })
+    expect(lookupModelsDevReasoningOptions('deepseek-v4-1-flash-261017', unique)).toEqual([
+      { type: 'toggle' },
+      { type: 'effort', values: ['low', 'high', 'max'] },
+    ])
+
+    const identical = modelsDevTestUtils.parseModelsDevData({
+      providerA: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high'] }] } } },
+      providerB: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high'] }] } } },
+    })
+    expect(lookupModelsDevReasoningOptions('shared-model', identical)).toEqual([
+      { type: 'effort', values: ['low', 'high'] },
+    ])
+
+    const conflicting = modelsDevTestUtils.parseModelsDevData({
+      providerA: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high'] }] } } },
+      providerB: { models: { 'shared-model': { id: 'shared-model', reasoning_options: [{ type: 'effort', values: ['low', 'high', 'max'] }] } } },
+    })
+    expect(lookupModelsDevReasoningOptions('shared-model', conflicting)).toBeUndefined()
+  })
+
+  it('should fetch and cache the reasoning catalog separately', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const value = String(url).endsWith('/api.json')
+        ? { byteplus: { models: { 'reasoning-model': {
+            id: 'reasoning-model',
+            reasoning_options: [{ type: 'toggle' }, { type: 'effort', values: ['low', 'high', 'max'] }],
+          } } } }
+        : { test: { models: { 'reasoning-model': { id: 'reasoning-model', reasoning: true } } } }
+      return new Response(JSON.stringify(value))
+    })
+
+    const models = await fetchModelsDevData()
+    const reasoning = await fetchModelsDevReasoningData()
+    await fetchModelsDevReasoningData()
+
+    expect(models.get('test/reasoning-model')?.reasoning).toBe(true)
+    expect(lookupModelsDevReasoningOptions('reasoning-model', reasoning)).toEqual([
+      { type: 'toggle' },
+      { type: 'effort', values: ['low', 'high', 'max'] },
+    ])
     expect(fetchMock).toHaveBeenCalledTimes(2)
     fetchMock.mockRestore()
   })

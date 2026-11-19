@@ -9,6 +9,8 @@ import { discoveryCacheKey, isDiscoveryCacheFresh, sanitizeSensitiveFields } fro
 import { resolveProviderCredential } from "./credential-resolver.js"
 import { DiscoveryRpcDefinition, type RpcCacheEntry } from "./rpc.js"
 import { applyModelOverride, deleteModelOverride, listModelOverrides, setModelOverride } from "./overrides.js"
+import { inventorySnapshotKey, readInventorySnapshot, writeInventorySnapshot } from "./inventory-snapshot.js"
+import { persistedConfigPath, persistConfigModels } from "./config-models.js"
 
 export function integrationID(providerID: string): string {
   return providerID
@@ -53,6 +55,7 @@ async function configuredProviders(ctx: Plugin.Context): Promise<{
         name: typeof entry.name === "string" ? entry.name : undefined,
         package: entry.package,
         settings,
+        pruneMissing: parsed.pruneMissing,
       })
       discovery.set(entry.id, parsed)
     }
@@ -87,6 +90,7 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
   const controller = createProviderController(ctx, providers, integrationID)
   let baselineInventory: Inventory = new Map()
   let transformsRegistration: Promise<void> | undefined
+  const inventoryKeys = new Map<string, string>()
 
   const ensureTransformsRegistered = async (): Promise<void> => {
     if (!transformsRegistration) {
@@ -124,13 +128,45 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
     discovery.clear()
     for (const [id, options] of configured.discovery) discovery.set(id, options)
 
-    await ensureTransformsRegistered()
     return configured.providers.length > 0
   }
 
-  const refreshInventoryInternal = async (force?: boolean): Promise<RefreshResult> => {
+  const restoreConfiguredInventory = async () => {
     const resolved = await resolveProviderCredentials(ctx, providers)
     providers.splice(0, providers.length, ...resolved)
+    const previousProviderIDs = [...controller.getInventory().keys()]
+    let identityChanged = false
+    const previousInventory: Inventory = new Map()
+    for (const provider of resolved) {
+      const key = inventorySnapshotKey(provider, ctx.location?.directory)
+      if (inventoryKeys.has(provider.id) && inventoryKeys.get(provider.id) !== key) identityChanged = true
+      const previous = inventoryKeys.get(provider.id) === key
+        ? baselineInventory.get(provider.id)
+        : await readInventorySnapshot(ctx.storage, key)
+      previousInventory.set(provider.id, previous ?? new Map())
+      inventoryKeys.set(provider.id, key)
+    }
+    baselineInventory = new Map([...previousInventory].map(([id, models]) => [id, new Map(models)]))
+    const applyOverrides = async (inventory: Inventory): Promise<void> => {
+      const overrides = await listModelOverrides(ctx.storage)
+      for (const [providerID, models] of inventory) {
+        for (const [id, model] of models) {
+          const override = overrides.find((item) => item.providerID === providerID && (item.modelID === id || item.modelID === model.modelID))
+          if (override) models.set(id, applyModelOverride(model as unknown as Record<string, unknown>, override) as unknown as typeof model)
+        }
+      }
+    }
+    const restored = new Map([...previousInventory].map(([id, models]) => [id, new Map(models)]))
+    await applyOverrides(restored)
+    controller.restoreInventory(restored)
+    // Register immediately with the last successful snapshot; do not wait for
+    // the network request and never register an empty replacement for a warm setup.
+    await ensureTransformsRegistered()
+    return { resolved, previousInventory, previousProviderIDs, identityChanged, applyOverrides }
+  }
+
+  const refreshInventoryInternal = async (force?: boolean): Promise<RefreshResult> => {
+    const { resolved, previousInventory, previousProviderIDs, identityChanged, applyOverrides } = await restoreConfiguredInventory()
     const discoveredInventory = await discoverInventory(
       resolved,
       discovery,
@@ -138,13 +174,13 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
       ctx.storage ? createV2StorageCache(ctx.storage) : undefined,
       { force }
     )
-    const previousInventory = controller.getInventory()
     const inventory: Inventory = new Map()
     for (const provider of resolved) {
       const discovered = discoveredInventory.get(provider.id)
       if (discovered) {
         inventory.set(provider.id, discovered)
         baselineInventory.set(provider.id, new Map(discovered))
+        await writeInventorySnapshot(ctx.storage, inventoryKeys.get(provider.id)!, discovered)
       } else {
         // A failed request is represented by a missing provider entry. Keep the
         // last known inventory so a transient outage does not erase models.
@@ -154,15 +190,24 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
     for (const providerID of [...baselineInventory.keys()]) {
       if (!resolved.some((provider) => provider.id === providerID)) baselineInventory.delete(providerID)
     }
-    const storedOverrides = await listModelOverrides(ctx.storage)
-    const overrideByModel = new Map(storedOverrides.map((override) => [`${override.providerID}:${override.modelID}`, override]))
-    for (const [providerID, models] of inventory) {
-      for (const [modelID, model] of models) {
-        const override = overrideByModel.get(`${providerID}:${modelID}`) ?? overrideByModel.get(`${providerID}:${model.modelID}`)
-        if (override) models.set(modelID, applyModelOverride(model as unknown as Record<string, unknown>, override) as unknown as typeof model)
+    await applyOverrides(inventory)
+    for (const provider of resolved) {
+      const options = discovery.get(provider.id)?.persistModels
+      if (!options || !discoveredInventory.has(provider.id)) continue
+      try {
+        await persistConfigModels(persistedConfigPath(options, ctx.location?.directory), provider, inventory.get(provider.id)!)
+      } catch {
+        // A failed/contended config write must not erase the old file or inventory.
+        // Report the provider only; filesystem errors can contain sensitive paths.
+        // eslint-disable-next-line no-console
+        console.warn(`[opencode-models-discovery] Could not persist models for provider "${provider.id}"; keeping the existing configuration`)
       }
     }
-    await controller.replaceInventory(inventory)
+    // Failed requests leave the published inventory untouched. Successful empty
+    // responses are valid replacements, unlike failed/malformed responses.
+    if (discoveredInventory.size > 0 || identityChanged || previousProviderIDs.some((id) => !resolved.some((provider) => provider.id === id))) {
+      await controller.replaceInventory(inventory)
+    }
     return controller.status()
   }
 
@@ -248,7 +293,10 @@ export async function setupV2(ctx: Plugin.Context): Promise<() => void> {
   const inspectStatus = async (options?: DiscoveryStatusInput): Promise<string> =>
     formatStatusReport(await collectStatus(options), options)
 
-  await ensureTransformsRegistered()
+  // Restore the last successful snapshot before exposing RPC/tools. This is local
+  // state restoration only: transform registration does not wait for discovery.
+  await syncConfiguredProviders()
+  await restoreConfiguredInventory()
   await registerDiscoveryTools(ctx, refreshFromCurrentConfig, inspectStatus)
 
   if (ctx.rpc && typeof ctx.rpc.register === "function") {
